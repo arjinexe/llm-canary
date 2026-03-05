@@ -1,0 +1,80 @@
+name: 🐤 llm-canary
+
+on:
+  # Run every Monday at 09:00 UTC
+  schedule:
+    - cron: '0 9 * * 1'
+
+  # Run on pushes that change config or suites
+  push:
+    branches: [main]
+    paths:
+      - '.llm-canary.yml'
+      - 'llm_canary/suites/**'
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  canary:
+    name: Run Canary Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # install
+      - name: Install llm-canary
+        run: pip install llm-canary
+
+      # restore cached results so drift detection has history
+      # Key is intentionally stable (not tied to config hash) so the baseline
+      # is never wiped when you update .llm-canary.yml.
+      # To manually reset baseline: go to Actions → Caches and delete it.
+      - name: Restore canary results cache
+        uses: actions/cache@v4
+        with:
+          path: .canary-results/
+          key: canary-results-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            canary-results-${{ runner.os }}-
+
+      # run
+      - name: Run canary tests
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: llm-canary run --output-dir .canary-results
+
+      # generate report even if tests fail
+      - name: Generate HTML report
+        if: always()
+        run: llm-canary report --results-dir .canary-results --output canary-report.html
+
+      # upload as artifact
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report-${{ github.run_number }}
+          path: |
+            canary-report.html
+            .canary-results/
+          retention-days: 90

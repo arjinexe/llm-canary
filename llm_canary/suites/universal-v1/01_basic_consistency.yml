@@ -1,0 +1,40 @@
+- name: ping-pong
+  prompt: "Reply with only the single word: PONG. Nothing else."
+  eval: exact
+  expected: "PONG"
+
+- name: prime-100
+  prompt: "How many prime numbers are there less than or equal to 100? Reply with only the number."
+  eval: exact
+  expected: "25"
+
+- name: capital-france
+  prompt: "What is the capital of France? Reply with only the city name."
+  eval: exact
+  expected: "Paris"
+
+- name: list-count-five
+  prompt: "List exactly 5 colors. Output only a comma-separated list with no extra text."
+  eval: contains
+  expected: ","
+
+- name: word-count-obedience
+  prompt: "Describe the ocean in exactly 3 words. Reply with only those 3 words."
+  eval: semantic
+  expected: "vast deep blue"
+  threshold: 0.5
+
+- name: multiply-17-13
+  prompt: "What is 17 multiplied by 13? Reply with only the number."
+  eval: exact
+  expected: "221"
+
+- name: negative-addition
+  prompt: "What is -45 + 78? Reply with only the number."
+  eval: exact
+  expected: "33"
+
+- name: largest-continent
+  prompt: "What is the largest continent on Earth by area? Reply with only the continent name."
+  eval: exact
+  expected: "Asia"

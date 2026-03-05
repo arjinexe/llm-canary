@@ -1,0 +1,34 @@
+- name: uppercase-only
+  prompt: "Write the word 'hello' in ALL UPPERCASE LETTERS. Output only that word."
+  eval: exact
+  expected: "HELLO"
+
+- name: no-explanation
+  prompt: "What is 2+2? Answer with only the digit, no explanation."
+  eval: exact
+  expected: "4"
+
+- name: respond-in-turkish
+  prompt: "Say 'thank you' in Turkish. Output only the Turkish phrase."
+  eval: contains
+  expected: "teşekkür"
+
+- name: haiku-format
+  prompt: "Write a haiku about the moon. Three lines only, no title, no explanation."
+  eval: contains
+  expected: "\n"
+
+- name: bullet-list-format
+  prompt: "List 3 planets. Format as a bullet list using '-' prefix. No intro text."
+  eval: contains
+  expected: "- "
+
+- name: ww2-end-year
+  prompt: "What year did World War 2 end? One number only."
+  eval: exact
+  expected: "1945"
+
+- name: single-word-answer
+  prompt: "Is water wet? Answer with one word: yes or no."
+  eval: contains
+  expected: "yes"

@@ -1,0 +1,48 @@
+- name: syllogism-basic
+  prompt: |
+    All mammals are warm-blooded.
+    A whale is a mammal.
+    Is a whale warm-blooded? Answer with one word: yes or no.
+  eval: exact
+  expected: "yes"
+
+- name: if-then-chain
+  prompt: |
+    If A > B and B > C, is A > C?
+    Answer with one word: yes or no.
+  eval: exact
+  expected: "yes"
+
+- name: days-calculation
+  prompt: |
+    If today is Wednesday and I have a meeting in 3 days, what day is the meeting?
+    Answer with only the day name.
+  eval: exact
+  expected: "Saturday"
+
+- name: word-reversal
+  prompt: |
+    Reverse the word "CANARY". Output only the reversed word in uppercase.
+  eval: exact
+  expected: "YRANAC"
+
+- name: odd-one-out
+  prompt: |
+    Which one does not belong: Apple, Banana, Carrot, Orange?
+    Output only the word that doesn't belong.
+  eval: exact
+  expected: "Carrot"
+
+- name: sequence-next
+  prompt: |
+    What comes next in this sequence: 2, 4, 8, 16, ?
+    Output only the number.
+  eval: exact
+  expected: "32"
+
+- name: double-negation
+  prompt: |
+    Is it true that NOT (NOT true) equals true?
+    Answer with one word: yes or no.
+  eval: exact
+  expected: "yes"

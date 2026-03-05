@@ -1,0 +1,56 @@
+- name: simple-object
+  prompt: |
+    Return a JSON object with these exact fields:
+    - "name": a random first name
+    - "age": a number between 20 and 40
+    - "city": a city name
+
+    Output ONLY valid JSON. No markdown, no explanation.
+  eval: json
+  expected:
+    name: ""
+    age: 0
+    city: ""
+
+- name: json-array
+  prompt: |
+    Return a JSON array of exactly 3 color names as strings.
+    Example format: ["red", "blue", "green"]
+    Output ONLY the JSON array. No markdown, no explanation.
+  eval: contains
+  expected: "["
+
+- name: nested-json
+  prompt: |
+    Return a JSON object with this structure:
+    {
+      "user": {
+        "name": "any name",
+        "active": true
+      },
+      "count": 1
+    }
+    Output ONLY valid JSON. No markdown fences.
+  eval: json
+  expected:
+    user: {}
+    count: 0
+
+- name: json-with-numbers
+  prompt: |
+    Return a JSON object with:
+    - "temperature": the number 98.6
+    - "unit": the string "F"
+    Output ONLY valid JSON.
+  eval: json
+  expected:
+    temperature: 0
+    unit: ""
+
+- name: no-markdown-fences
+  prompt: |
+    Return {"status": "ok"} as raw JSON.
+    Do NOT use markdown code fences (no ```).
+    Output ONLY the JSON object.
+  eval: exact
+  expected: '{"status": "ok"}'

@@ -1,0 +1,47 @@
+# .llm-canary.yml — copy this to your project root
+# docs: https://github.com/arjinexe/llm-canary
+
+provider: openai   # openai | anthropic | google | mistral | cohere | groq | ollama | azure | bedrock
+model: gpt-4o      # openai: gpt-4o, gpt-4-turbo
+                   # anthropic: claude-3-5-sonnet-20241022
+                   # google: gemini-1.5-pro
+                   # mistral: mistral-large-latest
+                   # cohere: command-r-plus
+                   # groq: llama-3.1-70b-versatile
+                   # ollama: llama3.2 (runs locally, no key needed)
+                   # azure: your deployment name
+                   # bedrock: anthropic.claude-3-5-sonnet-20241022-v2:0
+
+suites:
+  - universal-v1       # basic consistency, instruction following, arithmetic
+  - json-reliability   # JSON output reliability
+  - reasoning          # logical reasoning
+
+# load additional suites from a local directory
+# suites_dir: ./my-suites
+
+custom_tests:
+  - name: product-extraction
+    prompt: "Extract the product name from: 'I want to buy a red iPhone 15 Pro.' Reply with only the product name."
+    eval: contains
+    expected: "iPhone"
+
+  - name: sentiment-positive
+    prompt: "Classify the sentiment of 'This product is absolutely amazing!' as: positive, negative, or neutral. One word only."
+    eval: exact
+    expected: "positive"
+
+  - name: json-extraction
+    prompt: |
+      Given: "John Smith, age 32, lives in Boston"
+      Extract as JSON with fields: name, age, city.
+      Output only raw JSON, no markdown.
+    eval: json
+    expected:
+      name: ""
+      age: 0
+      city: ""
+
+# alerts:
+#   slack_webhook: https://hooks.slack.com/services/T.../B.../...
+#   always: false  # true = alert on every run, false (default) = only on drift
