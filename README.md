@@ -23,8 +23,6 @@ llm-canary keeps a baseline of how your model behaves and diffs every run agains
 
 ```bash
 pip install llm-canary
-Note: PyPI release is coming soon. Until then, install directly from the repo:
-pip install git+https://github.com/arjinexe/llm-canary.git
 ```
 
 ## Quick start
