@@ -133,9 +133,14 @@ def cmd_run(args):
 def cmd_report(args):
     from llm_canary.report import generate_html_report
     results_dir = Path(args.results_dir)
+    if not results_dir.exists():
+        print(f"results directory not found: {results_dir}")
+        print("hint: run 'llm-canary run' first to generate results.")
+        sys.exit(1)
     files = sorted(results_dir.glob("*.json"))
     if not files:
         print(f"no result files in {results_dir}")
+        print("hint: make sure 'llm-canary run' completed successfully and an API key secret is configured.")
         sys.exit(1)
 
     if args.provider or args.model:

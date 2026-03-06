@@ -1,11 +1,9 @@
 name: 🐤 llm-canary
 
 on:
-  # Run every Monday at 09:00 UTC
   schedule:
     - cron: '0 9 * * 1'
 
-  # Run on pushes that change config or suites
   push:
     branches: [main]
     paths:
@@ -13,7 +11,6 @@ on:
       - 'llm_canary/suites/**'
       - 'pyproject.toml'
 
-  # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
       fail_under:
@@ -40,9 +37,6 @@ jobs:
       - name: Install llm-canary
         run: pip install .
 
-      # Restore cached results so drift detection has history to compare against.
-      # The key is intentionally stable (not tied to config hash) so the baseline
-      # survives config edits. To reset manually: go to Actions → Caches and delete.
       - name: Restore canary results cache
         uses: actions/cache@v4
         with:
@@ -52,6 +46,8 @@ jobs:
             canary-results-${{ runner.os }}-
 
       - name: Run canary tests
+        id: run
+        continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -68,10 +64,15 @@ jobs:
           FAIL_UNDER="${{ github.event.inputs.fail_under || '80' }}"
           llm-canary run --output-dir .canary-results --fail-under "$FAIL_UNDER"
 
-      # Generate report even when tests fail so you always get an artifact
       - name: Generate HTML report
         if: always()
-        run: llm-canary report --results-dir .canary-results --output canary-report.html
+        run: |
+          if compgen -G ".canary-results/*.json" > /dev/null 2>&1; then
+            llm-canary report --results-dir .canary-results --output canary-report.html
+          else
+            echo "No result files found — skipping report generation."
+            echo "Make sure at least one API key secret is configured in Settings → Secrets → Actions."
+          fi
 
       - name: Upload report artifact
         if: always()
@@ -82,3 +83,9 @@ jobs:
             canary-report.html
             .canary-results/
           retention-days: 90
+          if-no-files-found: warn
+
+      # Re-fail the job if the run step failed, so the workflow still goes red
+      - name: Propagate run failure
+        if: steps.run.outcome == 'failure'
+        run: exit 1
