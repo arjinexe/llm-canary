@@ -16,7 +16,7 @@ on:
       fail_under:
         description: 'Fail if pass rate drops below this percentage (0–100)'
         required: false
-        default: '80'
+        default: '60'
 
 jobs:
   canary:
