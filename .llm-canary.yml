@@ -1,0 +1,9 @@
+provider: groq
+model: llama-3.3-70b-versatile
+
+suites:
+  - universal-v1
+  - json-reliability
+
+parallel: 5
+fail_under: 80
