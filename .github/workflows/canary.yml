@@ -11,9 +11,15 @@ on:
     paths:
       - '.llm-canary.yml'
       - 'llm_canary/suites/**'
+      - 'pyproject.toml'
 
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
+    inputs:
+      fail_under:
+        description: 'Fail if pass rate drops below this percentage (0–100)'
+        required: false
+        default: '80'
 
 jobs:
   canary:
@@ -31,14 +37,12 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # install
       - name: Install llm-canary
-        run: pip install llm-canary
+        run: pip install .
 
-      # restore cached results so drift detection has history
-      # Key is intentionally stable (not tied to config hash) so the baseline
-      # is never wiped when you update .llm-canary.yml.
-      # To manually reset baseline: go to Actions → Caches and delete it.
+      # Restore cached results so drift detection has history to compare against.
+      # The key is intentionally stable (not tied to config hash) so the baseline
+      # survives config edits. To reset manually: go to Actions → Caches and delete.
       - name: Restore canary results cache
         uses: actions/cache@v4
         with:
@@ -47,7 +51,6 @@ jobs:
           restore-keys: |
             canary-results-${{ runner.os }}-
 
-      # run
       - name: Run canary tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -61,14 +64,15 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: llm-canary run --output-dir .canary-results
+        run: |
+          FAIL_UNDER="${{ github.event.inputs.fail_under || '80' }}"
+          llm-canary run --output-dir .canary-results --fail-under "$FAIL_UNDER"
 
-      # generate report even if tests fail
+      # Generate report even when tests fail so you always get an artifact
       - name: Generate HTML report
         if: always()
         run: llm-canary report --results-dir .canary-results --output canary-report.html
 
-      # upload as artifact
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@v4

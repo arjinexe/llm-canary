@@ -14,7 +14,7 @@ from llm_canary import __version__
 
 
 def _post_with_retry(url, *, headers, payload, timeout=60, max_retries=3):
-    """POST with backoff on 429/5xx. Other errors raise immediately."""
+    """POST with exponential backoff on 429/5xx. Other errors raise immediately."""
     for attempt in range(1, max_retries + 1):
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         if resp.status_code == 429 or resp.status_code >= 500:
@@ -156,8 +156,8 @@ def call_ollama(model, prompt, system=""):
         resp.raise_for_status()
     except requests.exceptions.ConnectionError:
         raise ConnectionError(
-            f"Ollama bağlantı hatası ({base_url}). "
-            "'ollama serve' çalışıyor mu? OLLAMA_HOST doğru mu?"
+            f"Ollama connection error ({base_url}). "
+            "Is 'ollama serve' running? Is OLLAMA_HOST correct?"
         )
     return resp.json()["message"]["content"].strip()
 
@@ -175,7 +175,6 @@ def call_azure(model, prompt, system=""):
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    # model = deployment name in Azure
     url = f"{endpoint}/openai/deployments/{model}/chat/completions?api-version={api_version}"
     resp = _post_with_retry(
         url,
@@ -191,12 +190,11 @@ def call_bedrock(model, prompt, system=""):
         import boto3
         import json as _json
     except ImportError:
-        raise ImportError("boto3 gerekli: pip install boto3")
+        raise ImportError("boto3 is required: pip install boto3")
 
     region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
     client = boto3.client("bedrock-runtime", region_name=region)
 
-    # Bedrock uses different request shapes per model family
     if model.startswith("anthropic."):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
@@ -215,7 +213,6 @@ def call_bedrock(model, prompt, system=""):
     elif model.startswith("mistral."):
         body = {"prompt": f"<s>[INST] {prompt} [/INST]", "temperature": 0, "max_tokens": 1024}
     else:
-        # Generic — try OpenAI-compatible messages format
         body = {"messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 1024}
 
     response = client.invoke_model(
@@ -226,7 +223,6 @@ def call_bedrock(model, prompt, system=""):
     )
     result = _json.loads(response["body"].read())
 
-    # Extract text based on model family
     if model.startswith("anthropic."):
         return result["content"][0]["text"].strip()
     elif model.startswith("amazon.titan"):
@@ -236,7 +232,6 @@ def call_bedrock(model, prompt, system=""):
     elif model.startswith("mistral."):
         return result["outputs"][0]["text"].strip()
     else:
-        # Fallback
         return str(result)
 
 
@@ -253,6 +248,10 @@ PROVIDERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Evaluators
+# ---------------------------------------------------------------------------
+
 def evaluate_exact(response, expected):
     match = response.strip().lower() == expected.strip().lower()
     return match, 1.0 if match else 0.0
@@ -260,6 +259,16 @@ def evaluate_exact(response, expected):
 
 def evaluate_contains(response, expected):
     match = expected.lower() in response.lower()
+    return match, 1.0 if match else 0.0
+
+
+def evaluate_not_contains(response, expected):
+    match = expected.lower() not in response.lower()
+    return match, 1.0 if match else 0.0
+
+
+def evaluate_startswith(response, expected):
+    match = response.strip().lower().startswith(expected.strip().lower())
     return match, 1.0 if match else 0.0
 
 
@@ -311,23 +320,20 @@ def evaluate_semantic(response, expected, threshold=0.85):
 def evaluate_llm_judge(response, judge_prompt_template, judge_fn, threshold=0.5):
     """
     Calls a judge model to evaluate the response.
-    judge_prompt_template should contain {response} placeholder.
-    The judge must reply with a score between 0.0 and 1.0, or yes/no.
+    judge_prompt_template should contain a {response} placeholder.
+    The judge must reply with a score between 0.0–1.0, or yes/no.
     """
     prompt = judge_prompt_template.replace("{response}", response)
     try:
         verdict = judge_fn(prompt, "").strip().lower()
-        # Accept yes/no
         if verdict in ("yes", "true", "pass", "1"):
             return True, 1.0
         if verdict in ("no", "false", "fail", "0"):
             return False, 0.0
-        # Accept float score
         score = float(verdict)
         score = max(0.0, min(1.0, score))
         return score >= threshold, score
     except (ValueError, TypeError):
-        # Try extracting first float/yes/no from a longer response
         m = re.search(r"\b(yes|no|true|false|pass|fail)\b", verdict, re.IGNORECASE)
         if m:
             word = m.group(1).lower()
@@ -343,12 +349,18 @@ def evaluate_llm_judge(response, judge_prompt_template, judge_fn, threshold=0.5)
 EVALUATORS = {
     "exact": evaluate_exact,
     "contains": evaluate_contains,
+    "not_contains": evaluate_not_contains,
+    "startswith": evaluate_startswith,
     "regex": evaluate_regex,
     "json": evaluate_json,
     "semantic": evaluate_semantic,
     "llm_judge": evaluate_llm_judge,
 }
 
+
+# ---------------------------------------------------------------------------
+# Alerts
+# ---------------------------------------------------------------------------
 
 def send_alerts(config, summary, drift_info):
     alerts = config.get("alerts", {})
@@ -397,6 +409,10 @@ def send_alerts(config, summary, drift_info):
             print(f"   Slack alert failed: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# Suite and test loading
+# ---------------------------------------------------------------------------
+
 def load_suite(suite_path):
     tests = []
     for yml_file in sorted(suite_path.glob("*.yml")):
@@ -444,9 +460,9 @@ def load_csv_tests(csv_path):
 def _expand_vars(test):
     """Expand a test with a 'vars' list into multiple concrete tests.
 
-    Each entry in vars is a dict of variable name → value.
-    Variables are substituted using {{var_name}} syntax in name, prompt,
-    system, expected, judge_prompt, and inside assert list items.
+    Each entry in vars is a dict of variable name → value. Variables are
+    substituted using {{var_name}} syntax in name, prompt, system, expected,
+    judge_prompt, and inside assert list items.
     """
     var_list = test.get("vars")
     if not var_list:
@@ -463,14 +479,11 @@ def _expand_vars(test):
     top_fields = ("name", "prompt", "system", "expected", "judge_prompt")
     for var_dict in var_list:
         t = {k: v for k, v in test.items() if k != "vars"}
-        # Substitute in top-level string fields
         for field in top_fields:
             if field in t and isinstance(t[field], str):
                 t[field] = substitute(t[field], var_dict)
-        # Allow vars to override expected directly
         if "expected" in var_dict and "vars" not in str(var_dict.get("expected", "")):
             t["expected"] = str(var_dict["expected"])
-        # Substitute inside assert list items
         if "assert" in t and isinstance(t["assert"], list):
             new_assertions = []
             for assertion in t["assert"]:
@@ -488,7 +501,7 @@ def _run_assertions(response, assertions, judge_fn, test_name):
     """Run a list of assertion dicts against a single response.
 
     Returns (passed, score, eval_type_str) where score is the mean across
-    all assertions and passed is True only if every assertion passes.
+    all assertions and passed is True only when every assertion passes.
     """
     if not assertions:
         return True, 1.0, "multi"
@@ -507,10 +520,14 @@ def _run_assertions(response, assertions, judge_fn, test_name):
             p, s = evaluate_semantic(response, str(expected), threshold)
         elif eval_type == "json":
             if expected and not isinstance(expected, dict):
-                print(f"  ⚠️  '{test_name}': json assertion expected bir dict olmalı")
+                print(f"  ⚠️  '{test_name}': json assertion expected must be a dict")
             p, s = evaluate_json(response, expected if isinstance(expected, dict) else {})
         elif eval_type == "regex":
             p, s = evaluate_regex(response, str(expected))
+        elif eval_type == "not_contains":
+            p, s = evaluate_not_contains(response, str(expected))
+        elif eval_type == "startswith":
+            p, s = evaluate_startswith(response, str(expected))
         elif eval_type == "llm_judge":
             if judge_fn is None:
                 raise ValueError("llm_judge assertion requires 'judge' config in .llm-canary.yml")
@@ -526,13 +543,13 @@ def _run_assertions(response, assertions, judge_fn, test_name):
             all_passed = False
 
     mean_score = sum(scores) / len(scores)
-    label = "+".join(dict.fromkeys(eval_types))  # deduplicated, ordered
+    label = "+".join(dict.fromkeys(eval_types))
     return all_passed, mean_score, label
 
 
 def run_test(test, provider_fn, model, judge_fn=None):
     name = test.get("name", hashlib.md5(str(test).encode()).hexdigest()[:8])
-    assertions = test.get("assert")  # multi-assertion list
+    assertions = test.get("assert")
     eval_type = test.get("eval", "contains") if not assertions else "multi"
     start = time.time()
     try:
@@ -549,7 +566,7 @@ def run_test(test, provider_fn, model, judge_fn=None):
         if assertions:
             passed, score, eval_type = _run_assertions(response, assertions, judge_fn, name)
         elif eval_type == "json" and expected and not isinstance(expected, dict):
-            print(f"  ⚠️  '{name}': json eval için expected bir dict olmalı, {type(expected).__name__} verildi")
+            print(f"  ⚠️  '{name}': json eval expected must be a dict, got {type(expected).__name__}")
             passed, score = evaluate_json(response, {})
         elif eval_type == "semantic":
             passed, score = evaluate_semantic(response, expected, threshold)
@@ -557,6 +574,10 @@ def run_test(test, provider_fn, model, judge_fn=None):
             passed, score = evaluate_json(response, expected if isinstance(expected, dict) else {})
         elif eval_type == "regex":
             passed, score = evaluate_regex(response, str(expected))
+        elif eval_type == "not_contains":
+            passed, score = evaluate_not_contains(response, str(expected))
+        elif eval_type == "startswith":
+            passed, score = evaluate_startswith(response, str(expected))
         elif eval_type == "llm_judge":
             if judge_fn is None:
                 raise ValueError("llm_judge eval requires 'judge' config in .llm-canary.yml")
@@ -592,7 +613,6 @@ def _run_tests_parallel(all_tests, provider_fn, model, judge_fn, workers):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     total = len(all_tests)
-    results_map = {}
     lock = __import__("threading").Lock()
     completed = [0]
 
@@ -621,13 +641,17 @@ def _run_tests_parallel(all_tests, provider_fn, model, judge_fn, workers):
     return [ordered[i] for i in range(len(all_tests))]
 
 
-def _load_all_tests(config, csv_file=None):
+def _load_all_tests(config, csv_file=None, suite_filter=None):
     builtin_suites = Path(__file__).parent / "suites"
     custom_suites_dir = config.get("suites_dir", "")
     extra_suites = Path(custom_suites_dir) if custom_suites_dir else None
 
+    requested_suites = config.get("suites", ["universal-v1"])
+    if suite_filter:
+        requested_suites = [s for s in requested_suites if s == suite_filter]
+
     all_tests = []
-    for suite_name in config.get("suites", ["universal-v1"]):
+    for suite_name in requested_suites:
         suite_path = None
         if extra_suites and (extra_suites / suite_name).exists():
             suite_path = extra_suites / suite_name
@@ -642,11 +666,11 @@ def _load_all_tests(config, csv_file=None):
         else:
             print(f"  suite not found: {suite_name}")
 
-    for custom in config.get("custom_tests", []):
-        custom["_suite"] = "custom"
-        all_tests.append(custom)
+    if not suite_filter:
+        for custom in config.get("custom_tests", []):
+            custom["_suite"] = "custom"
+            all_tests.append(custom)
 
-    # CSV tests — from config or CLI --tests flag
     csv_paths = []
     if csv_file:
         csv_paths.append(csv_file)
@@ -663,7 +687,6 @@ def _load_all_tests(config, csv_file=None):
         print(f"  loaded {len(csv_tests)} tests from {cp.name}")
         all_tests.append(csv_tests)
 
-    # Flatten and expand template variables
     flat = []
     for t in all_tests:
         if isinstance(t, list):
@@ -675,8 +698,16 @@ def _load_all_tests(config, csv_file=None):
     return flat
 
 
-def run_canary(config_path=".llm-canary.yml", output_dir=".canary-results",
-               provider_override=None, model_override=None, csv_file=None):
+def run_canary(
+    config_path=".llm-canary.yml",
+    output_dir=".canary-results",
+    provider_override=None,
+    model_override=None,
+    csv_file=None,
+    suite_filter=None,
+    fail_under=None,
+    quiet=False,
+):
     config_file = Path(config_path)
     if not config_file.exists():
         raise FileNotFoundError(f"{config_path} not found — run `llm-canary init` first")
@@ -691,7 +722,6 @@ def run_canary(config_path=".llm-canary.yml", output_dir=".canary-results",
     if not provider_fn:
         raise ValueError(f"unknown provider '{provider_name}', choose from: {list(PROVIDERS)}")
 
-    # Judge setup for llm_judge evaluator
     judge_fn = None
     judge_cfg = config.get("judge", {})
     if judge_cfg:
@@ -700,7 +730,7 @@ def run_canary(config_path=".llm-canary.yml", output_dir=".canary-results",
         if judge_provider:
             judge_fn = lambda prompt, system="": judge_provider(judge_model, prompt, system)
 
-    all_tests = _load_all_tests(config, csv_file=csv_file)
+    all_tests = _load_all_tests(config, csv_file=csv_file, suite_filter=suite_filter)
 
     if not all_tests:
         raise ValueError("no tests found — add suites or custom_tests to .llm-canary.yml")
@@ -708,12 +738,15 @@ def run_canary(config_path=".llm-canary.yml", output_dir=".canary-results",
     workers = config.get("parallel", 1)
     parallel = isinstance(workers, int) and workers > 1
 
-    print(f"\nllm-canary v{__version__}")
-    print(f"  provider : {provider_name} / {model}")
-    print(f"  tests    : {len(all_tests)}")
-    if parallel:
-        print(f"  workers  : {workers}")
-    print(f"  time     : {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
+    if not quiet:
+        print(f"\nllm-canary v{__version__}")
+        print(f"  provider : {provider_name} / {model}")
+        print(f"  tests    : {len(all_tests)}")
+        if suite_filter:
+            print(f"  suite    : {suite_filter}")
+        if parallel:
+            print(f"  workers  : {workers}")
+        print(f"  time     : {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
 
     if parallel:
         results_list = _run_tests_parallel(all_tests, provider_fn, model, judge_fn, workers)
@@ -723,14 +756,16 @@ def run_canary(config_path=".llm-canary.yml", output_dir=".canary-results",
         for i, test in enumerate(all_tests, 1):
             name = test.get("name", f"test-{i}")
             suite = test.get("_suite", "unknown")
-            print(f"  [{i:02d}/{len(all_tests):02d}] {suite}/{name} ...", end=" ", flush=True)
+            if not quiet:
+                print(f"  [{i:02d}/{len(all_tests):02d}] {suite}/{name} ...", end=" ", flush=True)
             result = run_test(test, provider_fn, model, judge_fn)
             results.append({**result, "suite": suite})
-            if result["passed"]:
-                print(f"✅  ({result['score']:.2f}, {result['latency_s']}s)")
-            else:
-                err = f" ← {result['error']}" if result["error"] else f" ← score: {result['score']:.2f}"
-                print(f"❌{err}")
+            if not quiet:
+                if result["passed"]:
+                    print(f"✅  ({result['score']:.2f}, {result['latency_s']}s)")
+                else:
+                    err = f" ← {result['error']}" if result["error"] else f" ← score: {result['score']:.2f}"
+                    print(f"❌{err}")
 
     passed = sum(1 for r in results if r["passed"])
     failed = len(results) - passed
@@ -757,12 +792,25 @@ def run_canary(config_path=".llm-canary.yml", output_dir=".canary-results",
         json.dump(summary, f, indent=2)
 
     status = "✅" if pass_rate == 100 else ("⚠️" if pass_rate >= 70 else "🚨")
-    print(f"\n{status}  {pass_rate}% ({passed}/{total})")
+    if not quiet:
+        print(f"\n{status}  {pass_rate}% ({passed}/{total})")
 
-    drift_info = detect_drift(out_dir, summary, provider_name, model)
+    drift_info = detect_drift(out_dir, summary, provider_name, model, quiet=quiet)
 
     if drift_info.get("delta", 0) < -1 or config.get("alerts", {}).get("always", False):
         send_alerts(config, summary, drift_info)
+
+    # --fail-under threshold
+    effective_threshold = fail_under if fail_under is not None else config.get("fail_under")
+    if effective_threshold is not None:
+        try:
+            threshold_val = float(effective_threshold)
+            if pass_rate < threshold_val:
+                import sys
+                print(f"\n  fail-under threshold not met: {pass_rate}% < {threshold_val}%")
+                sys.exit(1)
+        except (ValueError, TypeError):
+            pass
 
     return summary
 
@@ -854,7 +902,6 @@ def run_compare(config_path=".llm-canary.yml", output_dir=".canary-results"):
 
         summaries.append(summary)
 
-    # Print comparison table
     print(f"\n{'═' * 52}")
     print("  COMPARISON")
     print(f"{'═' * 52}")
@@ -872,19 +919,62 @@ def run_compare(config_path=".llm-canary.yml", output_dir=".canary-results"):
     return summaries
 
 
-def detect_drift(results_dir, current, provider, model):
+def show_history(results_dir, provider, model, limit=10):
+    """Print a pass-rate trend table for a given provider/model."""
+    safe_model = model.replace("/", "-").replace(":", "-")
+    files = sorted(results_dir.glob(f"*_{provider}_{safe_model}.json"))
+
+    if not files:
+        print(f"  no history for {provider}/{model}")
+        return []
+
+    records = []
+    for f in files[-limit:]:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+            records.append({
+                "date": data.get("run_at", "")[:10],
+                "pass_rate": data.get("pass_rate", 0),
+                "passed": data.get("passed", 0),
+                "total": data.get("total", 0),
+            })
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    if not records:
+        return []
+
+    print(f"\n  history: {provider}/{model}  (last {len(records)} runs)\n")
+    print(f"  {'date':<12} {'pass rate':>10}   chart")
+    print(f"  {'─' * 12} {'─' * 10}   {'─' * 20}")
+
+    for rec in records:
+        rate = rec["pass_rate"]
+        bar_len = int(rate / 5)
+        bar = "█" * bar_len
+        icon = "✅" if rate == 100 else ("⚠️ " if rate >= 70 else "🚨")
+        print(f"  {rec['date']:<12} {icon} {rate:>5.1f}%   {bar}")
+
+    print()
+    return records
+
+
+def detect_drift(results_dir, current, provider, model, quiet=False):
     safe_model = model.replace("/", "-").replace(":", "-")
     history = sorted(results_dir.glob(f"*_{provider}_{safe_model}.json"))[:-1]
 
     if not history:
-        print("  (first run — baseline saved)")
+        if not quiet:
+            print("  (first run — baseline saved)")
         return {"delta": 0, "newly_failed": []}
 
     try:
         with open(history[-1], encoding="utf-8") as f:
             previous = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        print(f"  couldn't read previous result ({e}), skipping drift check")
+        if not quiet:
+            print(f"  couldn't read previous result ({e}), skipping drift check")
         return {"delta": 0, "newly_failed": []}
 
     delta = current["pass_rate"] - previous["pass_rate"]
@@ -893,14 +983,15 @@ def detect_drift(results_dir, current, provider, model):
     curr_fail = {r["name"] for r in current["results"] if not r["passed"]}
     newly_failed = sorted(prev_pass & curr_fail)
 
-    if abs(delta) < 1.0:
-        print(f"  no significant drift vs {prev_date}")
-    elif delta < 0:
-        print(f"\n🚨 drift detected: -{abs(delta):.1f}% since {prev_date}")
-        print(f"   {previous['pass_rate']}% → {current['pass_rate']}%")
-        if newly_failed:
-            print(f"   newly failing: {', '.join(newly_failed)}")
-    else:
-        print(f"  +{delta:.1f}% vs {prev_date}")
+    if not quiet:
+        if abs(delta) < 1.0:
+            print(f"  no significant drift vs {prev_date}")
+        elif delta < 0:
+            print(f"\n🚨 drift detected: -{abs(delta):.1f}% since {prev_date}")
+            print(f"   {previous['pass_rate']}% → {current['pass_rate']}%")
+            if newly_failed:
+                print(f"   newly failing: {', '.join(newly_failed)}")
+        else:
+            print(f"  +{delta:.1f}% vs {prev_date}")
 
     return {"delta": delta, "newly_failed": newly_failed, "prev_date": prev_date}

@@ -16,6 +16,7 @@ suites:
   # - reasoning
 
 # parallel: 5  # run tests concurrently (default: 1, sequential)
+# fail_under: 80  # exit 1 if pass rate drops below this percentage
 
 # test_files:  # load tests from CSV files
 #   - tests/my-tests.csv
@@ -43,6 +44,18 @@ custom_tests:
   #   prompt: "Generate a valid email address."
   #   eval: regex
   #   expected: "^[\\w.-]+@[\\w.-]+\\.[a-z]{2,}$"
+
+  # not_contains example — assert something is NOT in the response
+  # - name: no-apologies
+  #   prompt: "Tell me about the Roman Empire."
+  #   eval: not_contains
+  #   expected: "I'm sorry"
+
+  # startswith example
+  # - name: answer-yes
+  #   prompt: "Is Paris the capital of France? Start your answer with Yes or No."
+  #   eval: startswith
+  #   expected: "Yes"
 
   # multi-assertion — all must pass
   # - name: structured-output
@@ -94,12 +107,16 @@ def cmd_init(args):
 def cmd_run(args):
     from llm_canary.core import run_canary
     try:
+        fail_under = float(args.fail_under) if args.fail_under else None
         summary = run_canary(
             config_path=args.config,
             output_dir=args.output_dir,
             provider_override=args.provider or None,
             model_override=args.model or None,
             csv_file=args.tests or None,
+            suite_filter=args.suite or None,
+            fail_under=fail_under,
+            quiet=args.quiet,
         )
         if args.json:
             print(json.dumps(summary, indent=2))
@@ -142,7 +159,7 @@ def cmd_report(args):
         files = filtered
 
     out_path = Path(args.output)
-    generate_html_report(files[-1], out_path)
+    generate_html_report(files[-1], out_path, results_dir)
     print(f"report saved to {out_path}")
 
 
@@ -156,6 +173,15 @@ def cmd_compare(args):
     except Exception as e:
         print(f"error: {e}")
         sys.exit(2)
+
+
+def cmd_history(args):
+    from llm_canary.core import show_history
+    results_dir = Path(args.results_dir)
+    if not results_dir.exists():
+        print(f"results directory not found: {results_dir}")
+        sys.exit(1)
+    show_history(results_dir, args.provider, args.model, limit=args.limit)
 
 
 def main():
@@ -173,7 +199,11 @@ def main():
     p.add_argument("--provider", default="")
     p.add_argument("--model", default="")
     p.add_argument("--tests", default="", help="path to a CSV test file")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--suite", default="", help="run only this suite (e.g. universal-v1)")
+    p.add_argument("--fail-under", default="", metavar="N",
+                   help="exit 1 if pass rate is below N percent")
+    p.add_argument("--quiet", action="store_true", help="suppress per-test output")
+    p.add_argument("--json", action="store_true", help="print summary as JSON")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("compare", help="run suite against multiple providers and compare")
@@ -187,6 +217,13 @@ def main():
     p.add_argument("--provider", default="", help="filter by provider (e.g. openai)")
     p.add_argument("--model", default="", help="filter by model (e.g. gpt-4o)")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("history", help="show pass-rate trend for a provider/model")
+    p.add_argument("--results-dir", default=".canary-results")
+    p.add_argument("--provider", required=True)
+    p.add_argument("--model", required=True)
+    p.add_argument("--limit", type=int, default=10, help="number of recent runs to show")
+    p.set_defaults(func=cmd_history)
 
     args = parser.parse_args()
     args.func(args)

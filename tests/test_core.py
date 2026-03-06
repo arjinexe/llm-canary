@@ -9,12 +9,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from llm_canary.core import (
     evaluate_exact,
     evaluate_contains,
+    evaluate_not_contains,
+    evaluate_startswith,
     evaluate_json,
     evaluate_semantic,
     run_test,
     load_suite,
     detect_drift,
     send_alerts,
+    show_history,
 )
 
 
@@ -51,6 +54,38 @@ class TestEvaluateContains:
 
     def test_case_insensitive(self):
         passed, _ = evaluate_contains("HELLO WORLD", "hello")
+        assert passed is True
+
+
+class TestEvaluateNotContains:
+    def test_absent(self):
+        passed, score = evaluate_not_contains("The sky is blue.", "apology")
+        assert passed is True and score == 1.0
+
+    def test_present_fails(self):
+        passed, score = evaluate_not_contains("I'm sorry, I cannot help with that.", "sorry")
+        assert passed is False and score == 0.0
+
+    def test_case_insensitive(self):
+        passed, _ = evaluate_not_contains("SORRY about that", "sorry")
+        assert passed is False
+
+
+class TestEvaluateStartswith:
+    def test_match(self):
+        passed, score = evaluate_startswith("Yes, that is correct.", "yes")
+        assert passed is True and score == 1.0
+
+    def test_no_match(self):
+        passed, score = evaluate_startswith("No, that is incorrect.", "yes")
+        assert passed is False and score == 0.0
+
+    def test_strips_whitespace(self):
+        passed, _ = evaluate_startswith("  Yes indeed", "yes")
+        assert passed is True
+
+    def test_case_insensitive(self):
+        passed, _ = evaluate_startswith("YES absolutely", "yes")
         assert passed is True
 
 
@@ -123,6 +158,16 @@ class TestRunTest:
         r = run_test({"name": "t", "prompt": "x", "eval": "exact", "expected": "PING"}, _pong, "m")
         assert r["passed"] is False and r["score"] == 0.0
 
+    def test_not_contains(self):
+        def apology(m, p, s): return "I'm sorry, I can't help."
+        r = run_test({"name": "t", "prompt": "x", "eval": "not_contains", "expected": "sorry"}, apology, "m")
+        assert r["passed"] is False
+
+    def test_startswith(self):
+        def yes_fn(m, p, s): return "Yes, absolutely."
+        r = run_test({"name": "t", "prompt": "x", "eval": "startswith", "expected": "Yes"}, yes_fn, "m")
+        assert r["passed"] is True
+
     def test_missing_prompt(self):
         r = run_test({"name": "broken", "eval": "exact", "expected": "x"}, _pong, "m")
         assert r["passed"] is False and "missing" in r["error"] and r["eval_type"] == "exact"
@@ -176,7 +221,7 @@ class TestDetectDrift:
 
     def test_no_history(self, tmp_path):
         cur = {"pass_rate": 100.0, "run_at": "2025-03-01T09:00:00", "results": []}
-        info = detect_drift(tmp_path, cur, "openai", "gpt-4o")
+        info = detect_drift(tmp_path, cur, "openai", "gpt-4o", quiet=True)
         assert info["delta"] == 0
 
     def test_drift_detected(self, tmp_path):
@@ -190,7 +235,7 @@ class TestDetectDrift:
             ],
         }
         (tmp_path / "20250301_openai_gpt-4o.json").write_text(json.dumps(cur))
-        info = detect_drift(tmp_path, cur, "openai", "gpt-4o")
+        info = detect_drift(tmp_path, cur, "openai", "gpt-4o", quiet=True)
         assert info["delta"] < -1
         assert "b" in info["newly_failed"] and "c" in info["newly_failed"]
 
@@ -198,8 +243,38 @@ class TestDetectDrift:
         (tmp_path / "20250101_openai_gpt-4o.json").write_text("CORRUPT{{{")
         cur = {"pass_rate": 100.0, "run_at": "2025-03-01T09:00:00", "results": []}
         (tmp_path / "20250301_openai_gpt-4o.json").write_text(json.dumps(cur))
-        info = detect_drift(tmp_path, cur, "openai", "gpt-4o")
+        info = detect_drift(tmp_path, cur, "openai", "gpt-4o", quiet=True)
         assert info["delta"] == 0
+
+
+class TestShowHistory:
+    def _write(self, path, filename, pass_rate):
+        data = {
+            "run_at": "2025-01-01T09:00:00",
+            "provider": "openai", "model": "gpt-4o",
+            "pass_rate": pass_rate,
+            "passed": int(pass_rate), "total": 100,
+            "results": [],
+        }
+        (path / filename).write_text(json.dumps(data))
+
+    def test_returns_records(self, tmp_path):
+        self._write(tmp_path, "20250101_openai_gpt-4o.json", 100.0)
+        self._write(tmp_path, "20250108_openai_gpt-4o.json", 88.0)
+        records = show_history(tmp_path, "openai", "gpt-4o", limit=10)
+        assert len(records) == 2
+        assert records[0]["pass_rate"] == 100.0
+        assert records[1]["pass_rate"] == 88.0
+
+    def test_empty_dir(self, tmp_path):
+        records = show_history(tmp_path, "openai", "gpt-4o")
+        assert records == []
+
+    def test_limit(self, tmp_path):
+        for i in range(1, 8):
+            self._write(tmp_path, f"2025010{i}_openai_gpt-4o.json", float(i * 10))
+        records = show_history(tmp_path, "openai", "gpt-4o", limit=3)
+        assert len(records) == 3
 
 
 class TestSendAlerts:
